@@ -83,7 +83,7 @@ npm run build
 
 ## Deployment
 
-This repository is deployed on Versel as required by the test task.
+This repository is deployed on Vercel as required by the test task.
 
 ## Notes on AI Assistance
 
