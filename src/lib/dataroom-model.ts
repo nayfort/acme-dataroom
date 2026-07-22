@@ -10,8 +10,6 @@ import type {
 } from '../types'
 import { makeId } from './id'
 
-export const STORAGE_KEY = 'acme-dataroom-metadata-v1'
-
 const INVALID_NAME_CHARS = /[\\/:*?"<>|]+/g
 const PDF_SIGNATURE = '%PDF-'
 
@@ -385,6 +383,115 @@ export function deleteItemTree(state: AppState, itemId: ItemId) {
   }
 }
 
+export function getMoveDestinationFolders(
+  state: AppState,
+  dataroomId: DataroomId,
+  itemIds: ItemId[],
+) {
+  const blockedIds = new Set<ItemId>(itemIds)
+
+  for (const itemId of itemIds) {
+    const item = getItem(state, itemId)
+    if (item?.kind === 'folder') {
+      for (const descendant of getDescendantItems(state, item.id)) {
+        blockedIds.add(descendant.id)
+      }
+    }
+  }
+
+  return sortItems(
+    state.items.filter(
+      (item): item is FolderItem =>
+        item.kind === 'folder' && item.dataroomId === dataroomId && !blockedIds.has(item.id),
+    ),
+  )
+}
+
+export function moveItems(
+  state: AppState,
+  itemIds: ItemId[],
+  targetParentId: ItemId | null,
+) {
+  const movingIds = [...new Set(itemIds)]
+  if (movingIds.length === 0) {
+    return { state, movedItems: [] as DataroomItem[], error: 'Select at least one item to move.' }
+  }
+
+  const movingItems = movingIds
+    .map((itemId) => getItem(state, itemId))
+    .filter((item): item is DataroomItem => Boolean(item))
+
+  if (movingItems.length !== movingIds.length) {
+    return { state, movedItems: [] as DataroomItem[], error: 'Some selected items no longer exist.' }
+  }
+
+  const dataroomId = movingItems[0].dataroomId
+  if (movingItems.some((item) => item.dataroomId !== dataroomId)) {
+    return { state, movedItems: [] as DataroomItem[], error: 'Items can only be moved inside one dataroom.' }
+  }
+
+  const targetFolder =
+    targetParentId === null
+      ? null
+      : state.items.find(
+          (item) =>
+            item.id === targetParentId &&
+            item.kind === 'folder' &&
+            item.dataroomId === dataroomId,
+        )
+
+  if (targetParentId !== null && !targetFolder) {
+    return { state, movedItems: [] as DataroomItem[], error: 'The destination folder no longer exists.' }
+  }
+
+  const blockedDestinationIds = new Set<ItemId>()
+  for (const item of movingItems) {
+    blockedDestinationIds.add(item.id)
+    if (item.kind === 'folder') {
+      for (const descendant of getDescendantItems(state, item.id)) {
+        blockedDestinationIds.add(descendant.id)
+      }
+    }
+  }
+
+  if (targetParentId && blockedDestinationIds.has(targetParentId)) {
+    return {
+      state,
+      movedItems: [] as DataroomItem[],
+      error: 'A folder cannot be moved into itself or its own subfolder.',
+    }
+  }
+
+  const now = timestamp()
+  const availableSiblings = state.items.filter(
+    (item) =>
+      item.dataroomId === dataroomId &&
+      item.parentId === targetParentId &&
+      !movingIds.includes(item.id),
+  )
+  const movedById = new Map<ItemId, DataroomItem>()
+
+  for (const item of movingItems) {
+    const movedItem = {
+      ...item,
+      parentId: targetParentId,
+      name: makeUniqueName(item.name, [...availableSiblings, ...movedById.values()], item.kind),
+      updatedAt: now,
+    }
+    movedById.set(item.id, movedItem)
+  }
+
+  const nextState = {
+    ...state,
+    items: state.items.map((item) => movedById.get(item.id) ?? item),
+  }
+
+  return {
+    state: touchDataroom(nextState, dataroomId, now),
+    movedItems: [...movedById.values()],
+  }
+}
+
 export function searchItems(state: AppState, dataroomId: DataroomId, query: string) {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   if (!normalizedQuery) return []
@@ -441,47 +548,4 @@ export async function validatePdfFile(file: File) {
   }
 
   return null
-}
-
-export function loadMetadata() {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (!raw) return null
-
-  try {
-    const parsed = JSON.parse(raw) as AppState
-
-    if (
-      parsed?.schemaVersion !== 1 ||
-      !Array.isArray(parsed.datarooms) ||
-      !Array.isArray(parsed.items) ||
-      parsed.datarooms.length === 0
-    ) {
-      return null
-    }
-
-    const activeDataroomId = parsed.datarooms.some((room) => room.id === parsed.activeDataroomId)
-      ? parsed.activeDataroomId
-      : parsed.datarooms[0].id
-
-    const activeFolderId = parsed.items.some(
-      (item) =>
-        item.kind === 'folder' &&
-        item.id === parsed.activeFolderId &&
-        item.dataroomId === activeDataroomId,
-    )
-      ? parsed.activeFolderId
-      : null
-
-    return {
-      ...parsed,
-      activeDataroomId,
-      activeFolderId,
-    }
-  } catch {
-    return null
-  }
-}
-
-export function saveMetadata(state: AppState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 }

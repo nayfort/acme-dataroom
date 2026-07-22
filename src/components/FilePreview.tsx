@@ -1,7 +1,7 @@
 import { Download, FileText, Pencil, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { formatBytes } from '../lib/format'
-import { getPdfBlob } from '../lib/pdf-store'
+import { fileUrl } from '../lib/api'
 import type { FileItem } from '../types'
 import { Button } from './Button'
 
@@ -13,8 +13,8 @@ interface FilePreviewProps {
 }
 
 export function FilePreview({ file, onClose, onRename, onDelete }: FilePreviewProps) {
-  const [objectUrl, setObjectUrl] = useState('')
   const [error, setError] = useState('')
+  const pdfUrl = fileUrl(file.blobId)
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -28,33 +28,7 @@ export function FilePreview({ file, onClose, onRename, onDelete }: FilePreviewPr
   }, [onClose])
 
   useEffect(() => {
-    let url = ''
-    let cancelled = false
-
     setError('')
-    setObjectUrl('')
-
-    getPdfBlob(file.blobId)
-      .then((blob) => {
-        if (cancelled) return
-        if (!blob) {
-          setError('The PDF blob is missing from local browser storage.')
-          return
-        }
-
-        url = URL.createObjectURL(blob)
-        setObjectUrl(url)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError('Could not read this PDF from local browser storage.')
-        }
-      })
-
-    return () => {
-      cancelled = true
-      if (url) URL.revokeObjectURL(url)
-    }
   }, [file.blobId])
 
   return (
@@ -68,11 +42,9 @@ export function FilePreview({ file, onClose, onRename, onDelete }: FilePreviewPr
           </div>
         </div>
         <div className="preview-drawer__actions">
-          {objectUrl ? (
-            <a className="icon-link" href={objectUrl} download={file.name} title="Download">
-              <Download size={17} />
-            </a>
-          ) : null}
+          <a className="icon-link" href={pdfUrl} download={file.name} title="Download">
+            <Download size={17} />
+          </a>
           <Button aria-label="Rename file" size="icon" title="Rename" variant="ghost" onClick={() => onRename(file)}>
             <Pencil size={17} />
           </Button>
@@ -91,10 +63,12 @@ export function FilePreview({ file, onClose, onRename, onDelete }: FilePreviewPr
             <FileText size={28} />
             <p>{error}</p>
           </div>
-        ) : objectUrl ? (
-          <iframe src={objectUrl} title={file.name} />
         ) : (
-          <div className="preview-loading">Loading preview...</div>
+          <iframe
+            src={pdfUrl}
+            title={file.name}
+            onError={() => setError('Could not load this PDF from server storage.')}
+          />
         )}
       </div>
     </aside>

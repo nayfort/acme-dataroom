@@ -9,7 +9,7 @@ interface NameDialogProps {
   initialValue?: string
   confirmLabel: string
   onClose: () => void
-  onSubmit: (value: string) => string | void
+  onSubmit: (value: string) => string | void | Promise<string | void>
 }
 
 export function NameDialog({
@@ -22,6 +22,7 @@ export function NameDialog({
 }: NameDialogProps) {
   const [value, setValue] = useState(initialValue)
   const [error, setError] = useState('')
+  const [isSubmitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export function NameDialog({
     inputRef.current?.select()
   }, [])
 
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     const trimmedValue = value.trim()
 
@@ -38,13 +39,19 @@ export function NameDialog({
       return
     }
 
-    const result = onSubmit(trimmedValue)
-    if (result) {
-      setError(result)
-      return
-    }
+    setSubmitting(true)
 
-    onClose()
+    try {
+      const result = await onSubmit(trimmedValue)
+      if (result) {
+        setError(result)
+        return
+      }
+
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -63,10 +70,10 @@ export function NameDialog({
         </label>
         {error ? <p className="form__error">{error}</p> : null}
         <footer className="dialog-actions">
-          <Button variant="ghost" onClick={onClose}>
+          <Button disabled={isSubmitting} variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary">
+          <Button disabled={isSubmitting} type="submit" variant="primary">
             {confirmLabel}
           </Button>
         </footer>

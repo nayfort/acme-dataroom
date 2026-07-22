@@ -1,6 +1,12 @@
 export type DataroomId = string
 export type ItemId = string
 
+export interface User {
+  id: string
+  name: string
+  email: string
+}
+
 export interface Dataroom {
   id: DataroomId
   name: string

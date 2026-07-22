@@ -1,29 +1,36 @@
+import { LoaderCircle } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
+import { AuthPanel } from './components/AuthPanel'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { ContentPane } from './components/ContentPane'
 import { FilePreview } from './components/FilePreview'
+import { MoveDialog, type MoveDestination } from './components/MoveDialog'
 import { NameDialog } from './components/NameDialog'
 import { Sidebar } from './components/Sidebar'
 import { ToastStack, type ToastMessage } from './components/Toast'
 import { Toolbar } from './components/Toolbar'
 import {
-  addFiles,
-  addFolder,
+  createDataroomRequest,
+  createFolderRequest,
+  deleteItemRequest,
+  fetchDataroomState,
+  getSession,
+  logout,
+  moveItemsRequest,
+  renameItemRequest,
+  uploadPdfRequest,
+} from './lib/api'
+import {
   canReceiveChildren,
-  createDataroom,
-  createInitialState,
-  deleteItemTree,
   getActiveDataroom,
   getChildren,
   getDescendantItems,
   getFolderPath,
-  getItemCountsByRoom,
   getItem,
+  getItemCountsByRoom,
   getItemLocation,
-  loadMetadata,
-  renameItem,
-  saveMetadata,
+  getMoveDestinationFolders,
   searchItems,
   selectDataroom,
   selectFolder,
@@ -31,21 +38,159 @@ import {
 } from './lib/dataroom-model'
 import { pluralize } from './lib/format'
 import { makeId } from './lib/id'
-import { deletePdfBlobs, savePdfBlob } from './lib/pdf-store'
-import type { DataroomItem, FileItem } from './types'
+import type { AppState, DataroomItem, FileItem, User } from './types'
 
 type DialogState =
   | { type: 'create-dataroom' }
   | { type: 'create-folder' }
   | { type: 'rename-item'; item: DataroomItem }
   | { type: 'delete-item'; item: DataroomItem }
+  | { type: 'move-items'; items: DataroomItem[] }
   | null
 
+interface DataroomWorkspaceProps {
+  state: AppState
+  user: User
+  onSignedOut: () => void
+  onStateChange: (state: AppState) => void
+}
+
+function getErrorMessage(error: unknown, fallback = 'Something went wrong.') {
+  return error instanceof Error ? error.message : fallback
+}
+
+function preserveActiveView(
+  nextState: AppState,
+  currentState: AppState,
+  overrides: Partial<Pick<AppState, 'activeDataroomId' | 'activeFolderId'>> = {},
+) {
+  const requestedDataroomId = overrides.activeDataroomId ?? currentState.activeDataroomId
+  const activeDataroomId = nextState.datarooms.some((room) => room.id === requestedDataroomId)
+    ? requestedDataroomId
+    : nextState.datarooms[0]?.id
+  const requestedFolderId =
+    Object.hasOwn(overrides, 'activeFolderId') ? overrides.activeFolderId : currentState.activeFolderId
+  const activeFolderId =
+    requestedFolderId &&
+    nextState.items.some(
+      (item) =>
+        item.kind === 'folder' &&
+        item.id === requestedFolderId &&
+        item.dataroomId === activeDataroomId,
+    )
+      ? requestedFolderId
+      : null
+
+  return {
+    ...nextState,
+    activeDataroomId,
+    activeFolderId,
+  }
+}
+
+function LoadingScreen({ message }: { message: string }) {
+  return (
+    <main className="loading-screen">
+      <LoaderCircle className="spin-icon" size={26} />
+      <span>{message}</span>
+    </main>
+  )
+}
+
 function App() {
-  const [state, setState] = useState(() => loadMetadata() ?? createInitialState())
+  const [user, setUser] = useState<User | null>(null)
+  const [state, setState] = useState<AppState | null>(null)
+  const [isBooting, setBooting] = useState(true)
+  const [bootError, setBootError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function boot() {
+      try {
+        const session = await getSession()
+        if (cancelled) return
+
+        if (!session.user) {
+          setUser(null)
+          setState(null)
+          return
+        }
+
+        const result = await fetchDataroomState()
+        if (cancelled) return
+
+        setUser(session.user)
+        setState(result.state)
+      } catch (error) {
+        if (!cancelled) {
+          setBootError(getErrorMessage(error, 'Could not reach the dataroom server.'))
+        }
+      } finally {
+        if (!cancelled) {
+          setBooting(false)
+        }
+      }
+    }
+
+    void boot()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function handleAuthenticated(nextUser: User) {
+    setBootError('')
+    setBooting(true)
+
+    try {
+      const result = await fetchDataroomState()
+      setUser(nextUser)
+      setState(result.state)
+    } catch (error) {
+      setBootError(getErrorMessage(error, 'Could not load datarooms.'))
+    } finally {
+      setBooting(false)
+    }
+  }
+
+  if (isBooting) {
+    return <LoadingScreen message="Opening dataroom..." />
+  }
+
+  if (!user || !state) {
+    return (
+      <>
+        <AuthPanel onAuthenticated={(nextUser) => void handleAuthenticated(nextUser)} />
+        {bootError ? <div className="auth-error">{bootError}</div> : null}
+      </>
+    )
+  }
+
+  return (
+    <DataroomWorkspace
+      state={state}
+      user={user}
+      onSignedOut={() => {
+        setUser(null)
+        setState(null)
+      }}
+      onStateChange={setState}
+    />
+  )
+}
+
+function DataroomWorkspace({
+  state,
+  user,
+  onSignedOut,
+  onStateChange,
+}: DataroomWorkspaceProps) {
   const [query, setQuery] = useState('')
   const [dialog, setDialog] = useState<DialogState>(null)
   const [previewFileId, setPreviewFileId] = useState<string | null>(null)
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([])
   const [toasts, setToasts] = useState<ToastMessage[]>([])
   const [isUploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -60,10 +205,25 @@ function App() {
   }, [activeDataroom, activeFolderId, query, state])
   const itemCounts = useMemo(() => getItemCountsByRoom(state), [state])
   const previewFile = previewFileId ? getItem(state, previewFileId) : null
+  const selectedItems = useMemo(
+    () =>
+      selectedItemIds
+        .map((itemId) => getItem(state, itemId))
+        .filter((item): item is DataroomItem => Boolean(item)),
+    [selectedItemIds, state],
+  )
 
   useEffect(() => {
-    saveMetadata(state)
-  }, [state])
+    const validIds = new Set(state.items.map((item) => item.id))
+    setSelectedItemIds((current) => current.filter((itemId) => validIds.has(itemId)))
+  }, [state.items])
+
+  function applyServerState(
+    nextState: AppState,
+    overrides: Partial<Pick<AppState, 'activeDataroomId' | 'activeFolderId'>> = {},
+  ) {
+    onStateChange(preserveActiveView(nextState, state, overrides))
+  }
 
   function showToast(message: string, tone: ToastMessage['tone'] = 'info') {
     const toast: ToastMessage = { id: makeId('toast'), message, tone }
@@ -80,46 +240,95 @@ function App() {
     return `${visibleNames}, +${names.length - 3} more`
   }
 
-  function createRoom(name: string) {
-    const result = createDataroom(state, name)
-    setState(result.state)
-    setQuery('')
-    setPreviewFileId(null)
-    showToast(`Created dataroom "${result.room.name}".`, 'success')
+  async function createRoom(name: string) {
+    try {
+      const result = await createDataroomRequest(name)
+      applyServerState(result.state, { activeDataroomId: result.room.id, activeFolderId: null })
+      setQuery('')
+      setPreviewFileId(null)
+      setSelectedItemIds([])
+      showToast(`Created dataroom "${result.room.name}".`, 'success')
+    } catch (error) {
+      return getErrorMessage(error, 'Could not create dataroom.')
+    }
   }
 
-  function createFolder(name: string) {
-    const result = addFolder(state, activeDataroom.id, activeFolderId, name)
-    setState(result.state)
-    showToast(`Created folder "${result.item.name}".`, 'success')
+  async function createFolder(name: string) {
+    if (!activeDataroom) return 'No active dataroom.'
+
+    try {
+      const result = await createFolderRequest(activeDataroom.id, activeFolderId, name)
+      applyServerState(result.state, {
+        activeDataroomId: activeDataroom.id,
+        activeFolderId,
+      })
+      showToast(`Created folder "${result.item.name}".`, 'success')
+    } catch (error) {
+      return getErrorMessage(error, 'Could not create folder.')
+    }
   }
 
-  function renameExistingItem(item: DataroomItem, name: string) {
-    const result = renameItem(state, item.id, name)
-    if (result.error) return result.error
-
-    setState(result.state)
-    showToast(`Renamed to "${result.item?.name}".`, 'success')
+  async function renameExistingItem(item: DataroomItem, name: string) {
+    try {
+      const result = await renameItemRequest(item.id, name)
+      applyServerState(result.state)
+      showToast(`Renamed to "${result.item.name}".`, 'success')
+    } catch (error) {
+      return getErrorMessage(error, 'Could not rename this item.')
+    }
   }
 
   async function confirmDeleteItem(item: DataroomItem) {
-    const result = deleteItemTree(state, item.id)
-    setState(result.state)
-    setDialog(null)
+    try {
+      const result = await deleteItemRequest(item.id)
+      applyServerState(result.state)
+      setDialog(null)
+      setSelectedItemIds((current) =>
+        current.filter((itemId) => !result.deletedItems.some((deletedItem) => deletedItem.id === itemId)),
+      )
 
-    if (previewFileId && result.deletedItems.some((deletedItem) => deletedItem.id === previewFileId)) {
-      setPreviewFileId(null)
+      if (previewFileId && result.deletedItems.some((deletedItem) => deletedItem.id === previewFileId)) {
+        setPreviewFileId(null)
+      }
+
+      showToast(`Deleted "${item.name}".`, 'success')
+    } catch (error) {
+      showToast(getErrorMessage(error, 'Could not delete this item.'), 'error')
+    }
+  }
+
+  async function moveChosenItems(items: DataroomItem[], targetParentId: string | null) {
+    try {
+      const result = await moveItemsRequest(
+        items.map((item) => item.id),
+        targetParentId,
+      )
+      applyServerState(result.state)
+      setSelectedItemIds([])
+      showToast(`${pluralize(result.movedItems.length, 'item', 'items')} moved.`, 'success')
+    } catch (error) {
+      return getErrorMessage(error, 'Could not move selected items.')
+    }
+  }
+
+  async function moveIntoFolder(itemId: string, targetFolderId: string) {
+    const item = getItem(state, itemId)
+    if (!item) return
+
+    if (item.parentId === targetFolderId) {
+      showToast(`"${item.name}" is already in that folder.`, 'info')
+      return
     }
 
-    try {
-      await deletePdfBlobs(result.deletedFileBlobIds)
-      showToast(`Deleted "${item.name}".`, 'success')
-    } catch {
-      showToast('Metadata was deleted, but stored PDF cleanup failed.', 'error')
+    const error = await moveChosenItems([item], targetFolderId)
+    if (error) {
+      showToast(error, 'error')
     }
   }
 
   async function handleUploadFiles(fileList: FileList) {
+    if (!activeDataroom) return
+
     if (isUploading) {
       showToast('Another upload is already in progress.', 'info')
       return
@@ -135,6 +344,9 @@ function App() {
     }
 
     setUploading(true)
+
+    let latestState: AppState | null = null
+    let uploadedCount = 0
 
     try {
       const inspectedFiles = await Promise.all(
@@ -153,22 +365,20 @@ function App() {
         return
       }
 
-      const uploads = await Promise.all(
-        acceptedFiles.map(async (file) => {
-          const blobId = makeId('blob')
-          await savePdfBlob(blobId, file)
-          return {
-            blobId,
-            name: file.name,
-            originalName: file.name,
-            size: file.size,
-          }
-        }),
-      )
+      for (const file of acceptedFiles) {
+        const result = await uploadPdfRequest(file, targetDataroomId, targetFolderId)
+        latestState = result.state
+        uploadedCount += 1
+      }
 
-      const result = addFiles(state, targetDataroomId, targetFolderId, uploads)
-      setState(result.state)
-      showToast(`${pluralize(result.items.length, 'PDF', 'PDFs')} uploaded.`, 'success')
+      if (latestState) {
+        applyServerState(latestState, {
+          activeDataroomId: targetDataroomId,
+          activeFolderId: targetFolderId,
+        })
+      }
+
+      showToast(`${pluralize(uploadedCount, 'PDF', 'PDFs')} uploaded.`, 'success')
 
       if (rejectedFiles.length > 0) {
         showToast(
@@ -178,10 +388,24 @@ function App() {
           'error',
         )
       }
-    } catch {
-      showToast('Upload failed. The browser could not store the PDF.', 'error')
+    } catch (error) {
+      if (latestState) {
+        applyServerState(latestState, {
+          activeDataroomId: targetDataroomId,
+          activeFolderId: targetFolderId,
+        })
+      }
+      showToast(getErrorMessage(error, 'Upload failed. The server could not store the PDF.'), 'error')
     } finally {
       setUploading(false)
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logout()
+    } finally {
+      onSignedOut()
     }
   }
 
@@ -201,6 +425,32 @@ function App() {
     }
 
     return `Delete folder "${item.name}" and ${pluralize(nestedCount, 'nested item', 'nested items')}?`
+  }
+
+  function buildMoveDestinations(items: DataroomItem[]): MoveDestination[] {
+    if (!activeDataroom) return []
+
+    const movingIds = items.map((item) => item.id)
+    const folders = getMoveDestinationFolders(state, activeDataroom.id, movingIds)
+
+    return [
+      { id: null, label: `${activeDataroom.name} / Root` },
+      ...folders.map((folder) => ({
+        id: folder.id,
+        label: [activeDataroom.name, ...getFolderPath(state, folder.id).map((pathItem) => pathItem.name)].join(' / '),
+      })),
+    ]
+  }
+
+  function getInitialMoveDestination(items: DataroomItem[]) {
+    const [firstItem] = items
+    if (!firstItem) return null
+
+    return items.every((item) => item.parentId === firstItem.parentId) ? firstItem.parentId : null
+  }
+
+  if (!activeDataroom) {
+    return <LoadingScreen message="Loading dataroom..." />
   }
 
   return (
@@ -224,11 +474,14 @@ function App() {
         activeDataroomId={state.activeDataroomId}
         datarooms={state.datarooms}
         itemCounts={itemCounts}
+        user={user}
         onCreate={() => setDialog({ type: 'create-dataroom' })}
+        onLogout={() => void handleLogout()}
         onSelect={(dataroomId) => {
-          setState(selectDataroom(state, dataroomId))
+          onStateChange(selectDataroom(state, dataroomId))
           setQuery('')
           setPreviewFileId(null)
+          setSelectedItemIds([])
         }}
       />
 
@@ -238,15 +491,20 @@ function App() {
           dataroom={activeDataroom}
           query={query}
           onNavigateFolder={(folderId) => {
-            setState(selectFolder(state, folderId))
+            onStateChange(selectFolder(state, folderId))
             setQuery('')
+            setSelectedItemIds([])
           }}
           onNavigateRoot={() => {
-            setState(selectFolder(state, null))
+            onStateChange(selectFolder(state, null))
             setQuery('')
+            setSelectedItemIds([])
           }}
           onNewFolder={() => setDialog({ type: 'create-folder' })}
-          onQueryChange={setQuery}
+          onQueryChange={(nextQuery) => {
+            setQuery(nextQuery)
+            setSelectedItemIds([])
+          }}
           onUploadClick={openUploadPicker}
           isUploading={isUploading}
         />
@@ -257,14 +515,31 @@ function App() {
           items={visibleItems}
           locationForItem={(item) => getItemLocation(state, item).join(' / ')}
           query={query}
+          selectedItemIds={selectedItemIds}
+          onClearSelection={() => setSelectedItemIds([])}
           onDelete={(item) => setDialog({ type: 'delete-item', item })}
           onDropFiles={(files) => void handleUploadFiles(files)}
+          onMoveIntoFolder={(itemId, targetFolderId) => void moveIntoFolder(itemId, targetFolderId)}
+          onMoveItem={(item) => setDialog({ type: 'move-items', items: [item] })}
+          onMoveSelected={() => {
+            if (selectedItems.length > 0) {
+              setDialog({ type: 'move-items', items: selectedItems })
+            }
+          }}
           onOpenFolder={(folderId) => {
-            setState(selectFolder(state, folderId))
+            onStateChange(selectFolder(state, folderId))
             setQuery('')
+            setSelectedItemIds([])
           }}
           onPreviewFile={setPreviewFileId}
           onRename={(item) => setDialog({ type: 'rename-item', item })}
+          onToggleSelection={(itemId) =>
+            setSelectedItemIds((current) =>
+              current.includes(itemId)
+                ? current.filter((selectedItemId) => selectedItemId !== itemId)
+                : [...current, itemId],
+            )
+          }
           onUploadClick={openUploadPicker}
         />
       </section>
@@ -316,6 +591,16 @@ function App() {
           title={`Delete ${dialog.item.kind}`}
           onCancel={() => setDialog(null)}
           onConfirm={() => void confirmDeleteItem(dialog.item)}
+        />
+      ) : null}
+
+      {dialog?.type === 'move-items' ? (
+        <MoveDialog
+          destinations={buildMoveDestinations(dialog.items)}
+          initialDestinationId={getInitialMoveDestination(dialog.items)}
+          items={dialog.items}
+          onClose={() => setDialog(null)}
+          onMove={(targetParentId) => moveChosenItems(dialog.items, targetParentId)}
         />
       ) : null}
 

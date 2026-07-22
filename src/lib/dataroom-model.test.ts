@@ -7,6 +7,8 @@ import {
   createInitialState,
   deleteItemTree,
   getChildren,
+  getMoveDestinationFolders,
+  moveItems,
   renameItem,
   validatePdfFile,
 } from './dataroom-model'
@@ -110,5 +112,65 @@ describe('dataroom model', () => {
     const deleted = deleteItemTree(initial, legal!.id)
 
     expect(canReceiveChildren(deleted.state, roomId, legal!.id)).toBe(false)
+  })
+
+  it('moves items to another folder and suffixes destination name collisions', () => {
+    const initial = createInitialState('2026-01-01T00:00:00.000Z')
+    const roomId = initial.activeDataroomId
+    const legal = getChildren(initial, roomId, null).find((item) => item.name === 'Legal')
+    const financials = getChildren(initial, roomId, null).find((item) => item.name === 'Financials')
+    const contracts = legal
+      ? getChildren(initial, roomId, legal.id).find((item) => item.name === 'Contracts')
+      : undefined
+    const audits = financials
+      ? getChildren(initial, roomId, financials.id).find((item) => item.name === 'Audits')
+      : undefined
+
+    expect(contracts).toBeDefined()
+    expect(audits).toBeDefined()
+
+    const sourceUpload = addFiles(initial, roomId, contracts!.id, [
+      {
+        blobId: 'blob_source',
+        name: 'SPA.pdf',
+        originalName: 'SPA.pdf',
+        size: 2048,
+      },
+    ])
+    const destinationUpload = addFiles(sourceUpload.state, roomId, audits!.id, [
+      {
+        blobId: 'blob_destination',
+        name: 'SPA.pdf',
+        originalName: 'SPA.pdf',
+        size: 2048,
+      },
+    ])
+    const sourceFile = destinationUpload.state.items.find(
+      (item) => item.kind === 'file' && item.blobId === 'blob_source',
+    )
+    const result = sourceFile ? moveItems(destinationUpload.state, [sourceFile.id], audits!.id) : undefined
+
+    expect(result?.error).toBeUndefined()
+    expect(result?.movedItems[0].parentId).toBe(audits!.id)
+    expect(result?.movedItems[0].name).toBe('SPA (1).pdf')
+  })
+
+  it('blocks moving a folder into itself or its own descendant', () => {
+    const initial = createInitialState('2026-01-01T00:00:00.000Z')
+    const roomId = initial.activeDataroomId
+    const legal = getChildren(initial, roomId, null).find((item) => item.name === 'Legal')
+    const contracts = legal
+      ? getChildren(initial, roomId, legal.id).find((item) => item.name === 'Contracts')
+      : undefined
+
+    expect(legal).toBeDefined()
+    expect(contracts).toBeDefined()
+
+    const destinations = getMoveDestinationFolders(initial, roomId, [legal!.id])
+    const result = moveItems(initial, [legal!.id], contracts!.id)
+
+    expect(destinations.some((folder) => folder.id === contracts!.id)).toBe(false)
+    expect(result.error).toMatch(/cannot be moved/i)
+    expect(getChildren(result.state, roomId, null).some((item) => item.id === legal!.id)).toBe(true)
   })
 })

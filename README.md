@@ -1,19 +1,29 @@
 # Acme Dataroom
 
-A single-page React/TypeScript data room MVP for managing due diligence folders and PDF files. The app runs fully in the browser: folder/file metadata is saved to `localStorage`, and uploaded PDF blobs are saved in IndexedDB.
+A React/TypeScript data room for due diligence workspaces, backed by a small Node API. Users sign in, work with seeded dataroom content, upload PDFs to server storage, preview documents, and move files or folders across the room hierarchy.
 
 ## Features
 
-- Create multiple datarooms.
-- Create nested folders.
+- Cookie-based sign-in, registration, and logout.
+- Seeded demo users and populated datarooms on first server start.
+- Create multiple datarooms and nested folders.
 - Upload one or more validated PDF files by picker or drag-and-drop.
-- View uploaded PDFs in an in-app preview drawer.
-- Rename folders and files.
-- Delete folders with all nested folders/files.
-- Delete file blobs from IndexedDB when their metadata is removed.
-- Auto-suffix duplicate upload names, for example `SPA.pdf` and `SPA (1).pdf`.
-- Block duplicate names on rename to prevent accidental ambiguity.
+- Store metadata in `server/data/db.json` and PDFs in `server/data/pdfs`.
+- View PDFs in an in-app preview drawer served from the API.
+- Rename folders and files with duplicate sibling protection.
+- Move files/folders by row action, multi-select dialog, or drag-and-drop onto folders.
+- Delete folders with all nested folders/files and clean up uploaded PDF files.
 - Search files and folders by name across the active dataroom.
+- UI motion for auth, dialogs, drawers, row updates, drag targets, and toasts.
+
+## Demo Access
+
+```text
+analyst@acme.test / dataroom123
+partner@acme.test / dataroom123
+```
+
+New registered users receive the same seeded dataroom structure.
 
 ## Tech Stack
 
@@ -21,57 +31,47 @@ A single-page React/TypeScript data room MVP for managing due diligence folders 
 - React
 - TypeScript
 - Plain CSS
+- Node HTTP API with file-backed persistence
 - Lucide React icons
 - Vitest for domain model tests
 
-I kept the stack intentionally small. The task is frontend-focused and allows mocked persistence, so the app uses browser-native storage instead of a mock backend. The metadata/blob split mirrors a real implementation where metadata would live in an API database and binary files would live in object storage.
-
 ## Data Model
 
-The metadata is stored as flat records:
+The app keeps metadata as flat records:
 
 - `datarooms[]` contains top-level workspaces.
 - `items[]` contains both folders and files.
 - Every item has `dataroomId` and `parentId`, where `parentId: null` means the dataroom root.
 - Files additionally store `blobId`, `size`, `mimeType`, and `originalName`.
 
-This structure keeps lookup, search, duplicate detection, and cascade delete straightforward. Nested rendering is derived from `parentId`; nested deletion walks descendants and returns affected `blobId`s so the storage layer can clean up binary files.
-
-## Requirement Coverage
-
-| Requirement | Implementation |
-| --- | --- |
-| Build a dataroom frontend SPA | Vite + React + TypeScript single-page app |
-| Create datarooms | Sidebar create action with duplicate-name suffixing |
-| Create nested folders | Folder creation works at the dataroom root and inside any folder |
-| View folders and contents | Breadcrumb navigation and table view for each folder level |
-| Update folder name | Rename dialog with duplicate sibling protection |
-| Delete folder and nested contents | Confirm dialog performs cascade delete and blob cleanup |
-| Upload files | Multi-file PDF upload via picker or drag-and-drop |
-| Support PDF only | Extension/MIME screening plus `%PDF-` signature validation |
-| View file in UI | In-app PDF preview drawer using the stored browser blob |
-| Update file name | Rename dialog preserves `.pdf` extension when needed |
-| Delete file | Confirm dialog removes file metadata and IndexedDB blob |
-| Mock persistence | `localStorage` for metadata and IndexedDB for file blobs |
-| Extra credit search | Name-based search across the active dataroom |
-
-## Edge Cases Covered
-
-- Duplicate names on upload are renamed deterministically.
-- Duplicate names on rename are blocked to avoid ambiguous folders.
-- Empty files and renamed non-PDF files are rejected.
-- Deleting a folder closes a preview if the previewed file was inside that folder.
-- Upload actions are disabled while an upload is already in progress.
-- Missing local blobs show a clear preview error instead of crashing.
+The server owns persistence and authentication. Browser storage is not used for dataroom data.
 
 ## Setup
 
+Install dependencies:
+
 ```bash
 npm install
+```
+
+Start the API and Vite client together:
+
+```bash
 npm run dev
 ```
 
 Then open the local URL printed by Vite.
+
+For separate terminals, use `npm run dev:api` and `npm run dev:client`.
+
+## Production Build
+
+```bash
+npm run build
+npm run serve
+```
+
+`npm run serve` serves the API and the built client from `dist`.
 
 ## Quality Checks
 
@@ -81,10 +81,6 @@ npm run test
 npm run build
 ```
 
-## Deployment
+## Local Data
 
-This repository is deployed on Vercel as required by the test task.
-
-## Notes on AI Assistance
-
-AI helped generate the first pass of the UI and model scaffolding. One mistake it made was treating duplicate filenames as a rename concern only, which would let two uploaded PDFs with the same name appear identical. I caught that while mapping the upload flow and moved duplicate handling into the `addFiles` domain function, where it has access to the current sibling list and can safely create names like `Document (1).pdf`.
+The server creates `server/data` on first run. Delete that folder to reset users, sessions, seeded PDF files, and dataroom content.

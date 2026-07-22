@@ -1,21 +1,25 @@
-import { Database, Plus } from 'lucide-react'
-import type { Dataroom } from '../types'
+import { Database, LogOut, Plus } from 'lucide-react'
+import type { Dataroom, User } from '../types'
 import { Button } from './Button'
 
 interface SidebarProps {
   datarooms: Dataroom[]
   activeDataroomId: string
   itemCounts: Map<string, number>
+  user: User
   onSelect: (dataroomId: string) => void
   onCreate: () => void
+  onLogout: () => void
 }
 
 export function Sidebar({
   datarooms,
   activeDataroomId,
   itemCounts,
+  user,
   onSelect,
   onCreate,
+  onLogout,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
@@ -55,6 +59,22 @@ export function Sidebar({
           </button>
         ))}
       </nav>
+
+      <div className="sidebar__user">
+        <div>
+          <strong>{user.name}</strong>
+          <span>{user.email}</span>
+        </div>
+        <Button
+          aria-label="Sign out"
+          size="icon"
+          title="Sign out"
+          variant="ghost"
+          onClick={onLogout}
+        >
+          <LogOut size={16} />
+        </Button>
+      </div>
     </aside>
   )
 }

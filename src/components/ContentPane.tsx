@@ -1,5 +1,16 @@
-import { FileText, Folder, LoaderCircle, MoreHorizontal, Pencil, Trash2, Upload } from 'lucide-react'
+import {
+  FileText,
+  Folder,
+  FolderInput,
+  GripVertical,
+  LoaderCircle,
+  Pencil,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react'
 import { useState } from 'react'
+import { cx } from '../lib/cx'
 import { formatBytes, formatDate } from '../lib/format'
 import type { DataroomItem } from '../types'
 import { Button } from './Button'
@@ -8,11 +19,17 @@ interface ContentPaneProps {
   items: DataroomItem[]
   isSearching: boolean
   isUploading: boolean
+  selectedItemIds: string[]
   query: string
   locationForItem: (item: DataroomItem) => string
+  onClearSelection: () => void
+  onMoveIntoFolder: (itemId: string, targetFolderId: string) => void
+  onMoveItem: (item: DataroomItem) => void
+  onMoveSelected: () => void
   onOpenFolder: (folderId: string) => void
   onPreviewFile: (fileId: string) => void
   onRename: (item: DataroomItem) => void
+  onToggleSelection: (itemId: string) => void
   onDelete: (item: DataroomItem) => void
   onDropFiles: (files: FileList) => void
   onUploadClick: () => void
@@ -22,16 +39,24 @@ export function ContentPane({
   items,
   isSearching,
   isUploading,
+  selectedItemIds,
   query,
   locationForItem,
+  onClearSelection,
+  onMoveIntoFolder,
+  onMoveItem,
+  onMoveSelected,
   onOpenFolder,
   onPreviewFile,
   onRename,
+  onToggleSelection,
   onDelete,
   onDropFiles,
   onUploadClick,
 }: ContentPaneProps) {
   const [isDragActive, setDragActive] = useState(false)
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null)
+  const selectedIds = new Set(selectedItemIds)
 
   return (
     <main
@@ -63,8 +88,22 @@ export function ContentPane({
       ) : null}
 
       <div className="content-pane__summary">
-        <strong>{isSearching ? `Search results for "${query}"` : 'Folder contents'}</strong>
-        <span>{items.length} items</span>
+        <div>
+          <strong>{isSearching ? `Search results for "${query}"` : 'Folder contents'}</strong>
+          <span>{items.length} items</span>
+        </div>
+        {selectedItemIds.length > 0 ? (
+          <div className="selection-actions">
+            <span>{selectedItemIds.length} selected</span>
+            <Button size="sm" variant="primary" onClick={onMoveSelected}>
+              <FolderInput size={16} />
+              Move
+            </Button>
+            <Button aria-label="Clear selection" size="icon" title="Clear selection" variant="ghost" onClick={onClearSelection}>
+              <X size={16} />
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {items.length === 0 ? (
@@ -93,27 +132,75 @@ export function ContentPane({
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id}>
+              {items.map((item) => {
+                const isSelected = selectedIds.has(item.id)
+                const isDropTarget =
+                  Boolean(draggedItemId) && item.kind === 'folder' && draggedItemId !== item.id
+
+                return (
+                <tr
+                  key={item.id}
+                  className={cx(isSelected && 'is-selected', isDropTarget && 'is-drop-target')}
+                  draggable
+                  onDragEnd={() => setDraggedItemId(null)}
+                  onDragOver={(event) => {
+                    if (isDropTarget) {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'move'
+                    }
+                  }}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', item.id)
+                    setDraggedItemId(item.id)
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    const sourceItemId = event.dataTransfer.getData('text/plain') || draggedItemId
+                    setDraggedItemId(null)
+                    if (sourceItemId && item.kind === 'folder' && sourceItemId !== item.id) {
+                      onMoveIntoFolder(sourceItemId, item.id)
+                    }
+                  }}
+                >
                   <td>
-                    <button
-                      className="item-name"
-                      type="button"
-                      onClick={() =>
-                        item.kind === 'folder' ? onOpenFolder(item.id) : onPreviewFile(item.id)
-                      }
-                    >
-                      <span className={item.kind === 'folder' ? 'item-icon item-icon--folder' : 'item-icon'}>
-                        {item.kind === 'folder' ? <Folder size={18} /> : <FileText size={18} />}
-                      </span>
-                      <span>{item.name}</span>
-                    </button>
+                    <div className="item-cell">
+                      <label className="row-select">
+                        <input
+                          aria-label={`Select ${item.name}`}
+                          checked={isSelected}
+                          type="checkbox"
+                          onChange={() => onToggleSelection(item.id)}
+                        />
+                      </label>
+                      <button
+                        className="item-name"
+                        type="button"
+                        onClick={() =>
+                          item.kind === 'folder' ? onOpenFolder(item.id) : onPreviewFile(item.id)
+                        }
+                      >
+                        <span className={item.kind === 'folder' ? 'item-icon item-icon--folder' : 'item-icon'}>
+                          {item.kind === 'folder' ? <Folder size={18} /> : <FileText size={18} />}
+                        </span>
+                        <span>{item.name}</span>
+                      </button>
+                    </div>
                   </td>
                   <td className="muted-cell">{locationForItem(item) || 'Root'}</td>
                   <td className="muted-cell">{item.kind === 'file' ? formatBytes(item.size) : 'Folder'}</td>
                   <td className="muted-cell">{formatDate(item.updatedAt)}</td>
                   <td>
                     <div className="row-actions">
+                      <Button
+                        aria-label={`Move ${item.name}`}
+                        size="icon"
+                        title="Move"
+                        variant="ghost"
+                        onClick={() => onMoveItem(item)}
+                      >
+                        <FolderInput size={16} />
+                      </Button>
                       <Button
                         aria-label={`Rename ${item.name}`}
                         size="icon"
@@ -132,11 +219,11 @@ export function ContentPane({
                       >
                         <Trash2 size={16} />
                       </Button>
-                      <MoreHorizontal className="row-actions__handle" size={16} aria-hidden="true" />
+                      <GripVertical className="row-actions__handle" size={16} aria-hidden="true" />
                     </div>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
